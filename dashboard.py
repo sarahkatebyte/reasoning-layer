@@ -125,15 +125,56 @@ ROW = """    <tr>
     </tr>"""
 
 
-ASSISTANT_BIN = "/Users/sarahkate/.local/bin/assistant"
+VELLUM_DB = "/Users/sarahkate/.local/share/vellum/assistants/vellum-fast-egret-uffzad/.vellum/workspace/data/db/assistant.db"
+
+CALL_SITE_NAMES = {
+    "mainAgent": "Main Agent",
+    "memoryConsolidation": "Memory Consolidation",
+    "memoryExtraction": "Memory Extraction",
+    "memoryRetrieval": "Memory Retrieval",
+    "conversationSummarization": "Conversation Summarization",
+    "filingAgent": "Filing Agent",
+    "heartbeatAgent": "Heartbeat Agent",
+    "recall": "Recall",
+    "compactionAgent": "Compaction Agent",
+    "conversationStarters": "Conversation Starters",
+    "patternScan": "Pattern Scan",
+    "conversationTitle": "Conversation Title",
+    "narrativeRefinement": "Narrative Refinement",
+    "replySuggestion": "Reply Suggestion",
+    "notificationDecision": "Notification Decision",
+    "feedEventCopy": "Feed Event Copy",
+}
 
 def fetch_data():
-    result = subprocess.run(
-        [ASSISTANT_BIN, "usage", "breakdown", "--group-by", "call_site", "--range", "week", "--json"],
-        capture_output=True, text=True
-    )
-    data = json.loads(result.stdout)
-    return data.get("breakdown", [])
+    """Read directly from Vellum's SQLite DB — no daemon required."""
+    since = int((time.time() - 7 * 86400) * 1000)
+    src = sqlite3.connect(VELLUM_DB)
+    rows = src.execute("""
+        SELECT call_site,
+               SUM(estimated_cost_usd)          AS cost,
+               SUM(input_tokens)                AS input_tok,
+               SUM(output_tokens)               AS output_tok,
+               SUM(cache_creation_input_tokens) AS cache_write,
+               SUM(cache_read_input_tokens)     AS cache_read,
+               COUNT(*)                         AS events
+        FROM llm_usage_events
+        WHERE created_at >= ? AND call_site IS NOT NULL
+        GROUP BY call_site ORDER BY cost DESC
+    """, (since,)).fetchall()
+    src.close()
+    return [
+        {
+            "group": CALL_SITE_NAMES.get(r[0], r[0]),
+            "totalEstimatedCostUsd": r[1] or 0,
+            "totalInputTokens": r[2] or 0,
+            "totalOutputTokens": r[3] or 0,
+            "totalCacheCreationTokens": r[4] or 0,
+            "totalCacheReadTokens": r[5] or 0,
+            "eventCount": r[6],
+        }
+        for r in rows
+    ]
 
 
 def build_page():
