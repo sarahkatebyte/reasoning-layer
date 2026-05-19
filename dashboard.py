@@ -125,9 +125,11 @@ ROW = """    <tr>
     </tr>"""
 
 
+ASSISTANT_BIN = "/Users/sarahkate/.local/bin/assistant"
+
 def fetch_data():
     result = subprocess.run(
-        ["assistant", "usage", "breakdown", "--group-by", "call_site", "--range", "week", "--json"],
+        [ASSISTANT_BIN, "usage", "breakdown", "--group-by", "call_site", "--range", "week", "--json"],
         capture_output=True, text=True
     )
     data = json.loads(result.stdout)
