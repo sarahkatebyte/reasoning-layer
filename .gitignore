@@ -3,3 +3,11 @@ spend.db
 .env
 __pycache__/
 *.pyc
+
+# Terraform - never commit state or secrets
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+terraform.tfvars
+.terraform.lock.hcl

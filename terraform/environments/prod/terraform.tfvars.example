@@ -1,0 +1,8 @@
+# Copy this to terraform.tfvars and fill in your values
+# DO NOT commit terraform.tfvars to git
+
+aws_region        = "us-east-1"
+ami_id            = "ami-xxxxxxxxxxxxxxxxx"  # get with the aws cli command in variables.tf
+es_instance_type  = "t3.large"
+es_heap_size      = "4g"
+es_data_volume_gb = 100
