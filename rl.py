@@ -14,7 +14,6 @@ Usage:
 
 import sys
 import os
-import json
 from datetime import datetime
 
 # ---- optional color support ----
@@ -30,7 +29,17 @@ try:
 except ImportError:
     RED = GREEN = YELLOW = CYAN = BOLD = RESET = ""
 
-from reasoning_layer import ReasoningLogger, ReasoningEvent
+from reasoning_layer import ReasoningLogger
+
+os.environ.setdefault("ES_HOST", "http://localhost:9200")
+try:
+    from es_layer import ESMemoryNode
+    es = ESMemoryNode()
+    ES_AVAILABLE = True
+except Exception as e:
+    es = None
+    ES_AVAILABLE = False
+    ES_ERROR = str(e)
 
 
 def fmt_cost(val):
@@ -81,24 +90,25 @@ def cmd_stats():
     print(f"  Avg quality   : {fmt_quality(avg_quality)}")
 
     # ES stats if available
-    try:
-        from es_layer import ESMemoryNode
-        es = ESMemoryNode()
-        stats = es.stats()
-        print(f"\n{BOLD}Elasticsearch Index{RESET}")
-        print(f"  Indexed events: {BOLD}{stats['total_events']}{RESET}")
-        if stats["by_model"]:
-            print(f"  By model:")
-            for model, count in stats["by_model"].items():
-                print(f"    {fmt_model(model)}: {count} events")
-        if stats["by_task"]:
-            print(f"  By task type:")
-            for task, count in stats["by_task"].items():
-                print(f"    {CYAN}{task}{RESET}: {count} events")
-        if stats["avg_quality"]:
-            print(f"  Avg quality   : {fmt_quality(stats['avg_quality'])}")
-    except Exception as e:
-        print(f"\n  {YELLOW}ES unavailable: {e}{RESET}")
+    if ES_AVAILABLE:
+        try:
+            stats = es.stats()
+            print(f"\n{BOLD}Elasticsearch Index{RESET}")
+            print(f"  Indexed events: {BOLD}{stats['total_events']}{RESET}")
+            if stats["by_model"]:
+                print(f"  By model:")
+                for model, count in stats["by_model"].items():
+                    print(f"    {fmt_model(model)}: {count} events")
+            if stats["by_task"]:
+                print(f"  By task type:")
+                for task, count in stats["by_task"].items():
+                    print(f"    {CYAN}{task}{RESET}: {count} events")
+            if stats["avg_quality"]:
+                print(f"  Avg quality   : {fmt_quality(stats['avg_quality'])}")
+        except Exception as e:
+            print(f"\n  {YELLOW}ES error: {e}{RESET}")
+    else:
+        print(f"\n  {YELLOW}ES unavailable: {ES_ERROR}{RESET}")
 
     print()
 
@@ -120,11 +130,8 @@ def cmd_recent():
 
 
 def cmd_search(query: str):
-    try:
-        from es_layer import ESMemoryNode
-        es = ESMemoryNode()
-    except Exception as e:
-        print(f"ES unavailable: {e}")
+    if not ES_AVAILABLE:
+        print(f"ES unavailable: {ES_ERROR}")
         return
 
     print(f"\n{BOLD}✦ Similar to: \"{query}\"{RESET}")
@@ -142,11 +149,8 @@ def cmd_search(query: str):
 
 
 def cmd_suggest(query: str):
-    try:
-        from es_layer import ESMemoryNode
-        es = ESMemoryNode()
-    except Exception as e:
-        print(f"ES unavailable: {e}")
+    if not ES_AVAILABLE:
+        print(f"ES unavailable: {ES_ERROR}")
         return
 
     print(f"\n{BOLD}✦ Model suggestion for: \"{query}\"{RESET}")

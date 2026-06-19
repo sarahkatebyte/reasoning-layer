@@ -3,8 +3,8 @@ Reasoning Layer - Elasticsearch Integration
 --------------------------------------------
 Adds semantic memory and graph-style routing intelligence to the Reasoning Layer.
 
-Inspired by Doppel's graph engine approach: treat past routing decisions as
-connected entities. Find similar past requests, surface what worked, route smarter.
+Treats past routing decisions as connected entities. Find similar past requests,
+surface what worked, route smarter.
 
 Setup (local - no account needed):
     docker compose up
@@ -23,10 +23,10 @@ Usage:
     similar = es.find_similar("consolidate recent memories", top_k=5)
 """
 
+import math
 import os
 import json
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 from elasticsearch import Elasticsearch
@@ -37,10 +37,13 @@ from sentence_transformers import SentenceTransformer
 # Config
 # ---------------------------------------------------------------------------
 
-ES_CLOUD_ID  = os.environ.get("ES_CLOUD_ID")
 ES_API_KEY   = os.environ.get("ES_API_KEY")
 INDEX_NAME   = "reasoning-events"
 EMBED_MODEL  = "all-MiniLM-L6-v2"   # small, fast, runs locally, no API needed
+
+# K-line decay: how fast unused k-lines lose weight. λ=0.02 → ~35-day half-life.
+# Tune up (faster decay) or down (longer memory) based on how stale your data gets.
+DECAY_LAMBDA = 0.02
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +71,10 @@ INDEX_MAPPING = {
                 "dims": 384,
                 "index": True,
                 "similarity": "cosine"
-            }
+            },
+            # K-line reinforcement fields
+            "activation_count":   {"type": "integer"},
+            "last_activated_ts":  {"type": "date", "format": "epoch_millis"},
         }
     }
 }
@@ -111,6 +117,16 @@ class ESMemoryNode:
         if not self.client.indices.exists(index=INDEX_NAME):
             self.client.indices.create(index=INDEX_NAME, body=INDEX_MAPPING)
             print(f"Created index: {INDEX_NAME}")
+        else:
+            # Safe to call on existing indices — ES only errors if you change a field's type.
+            # Adds activation_count + last_activated_ts to indices created before this change.
+            kline_fields = {
+                "properties": {
+                    "activation_count":  {"type": "integer"},
+                    "last_activated_ts": {"type": "date", "format": "epoch_millis"},
+                }
+            }
+            self.client.indices.put_mapping(index=INDEX_NAME, body=kline_fields)
 
     def _embed(self, text: str) -> list[float]:
         return self.encoder.encode(text, normalize_embeddings=True).tolist()
@@ -134,9 +150,10 @@ class ESMemoryNode:
         ts: int = None,
     ):
         """Index a reasoning event with its embedding for future similarity search."""
+        now = ts or int(time.time() * 1000)
         doc = {
             "event_id":          event_id,
-            "ts":                ts or int(time.time() * 1000),
+            "ts":                now,
             "call_site":         call_site,
             "task_type":         task_type,
             "model_selected":    model_selected,
@@ -145,14 +162,63 @@ class ESMemoryNode:
             "latency_ms":        latency_ms,
             "quality_score":     quality_score,
             "quality_ok":        quality_ok,
-            "request_text":      request_text[:500],   # store truncated for display
+            "request_text":      request_text[:500],
             "request_embedding": self._embed(request_text),
+            "activation_count":  0,
+            "last_activated_ts": now,
         }
         self.client.index(index=INDEX_NAME, id=str(event_id), document=doc)
+
+    def update_feedback(self, event_id: str, quality_ok: bool, quality_score: float):
+        """Patch an existing event with explicit user feedback."""
+        self.client.update(
+            index=INDEX_NAME,
+            id=str(event_id),
+            body={"doc": {"quality_ok": quality_ok, "quality_score": quality_score}},
+        )
+
+    def activate_kline(self, event_id: str):
+        """
+        Call when a k-line fires successfully. Increments activation_count and
+        refreshes last_activated_ts, boosting this k-line's recall probability
+        for similar future requests via the composite score in find_similar().
+        """
+        self.client.update(
+            index=INDEX_NAME,
+            id=str(event_id),
+            body={
+                "script": {
+                    "source": (
+                        "ctx._source.activation_count = "
+                        "(ctx._source.containsKey('activation_count') ? ctx._source.activation_count : 0) + 1; "
+                        "ctx._source.last_activated_ts = params.now;"
+                    ),
+                    "params": {"now": int(time.time() * 1000)},
+                }
+            },
+        )
 
     # ------------------------------------------------------------------
     # Read path
     # ------------------------------------------------------------------
+
+    def _kline_score(self, similarity: float, source: dict) -> float:
+        """
+        Composite score: similarity × activation_weight × recency_weight.
+
+        activation_weight = 1 + log(1 + activation_count)
+          → new k-lines start at 1.0; repeated successful use compounds logarithmically.
+
+        recency_weight = e^(-λ × days_since_last_use)
+          → unused k-lines decay exponentially; stale configs lose relevance automatically.
+        """
+        activation_count = source.get("activation_count") or 0
+        last_ts = source.get("last_activated_ts") or source.get("ts") or int(time.time() * 1000)
+        days_since_use = max(0.0, (time.time() * 1000 - last_ts) / (1000 * 86400))
+
+        activation_weight = 1.0 + math.log1p(activation_count)
+        recency_weight = math.exp(-DECAY_LAMBDA * days_since_use)
+        return similarity * activation_weight * recency_weight
 
     def find_similar(
         self,
@@ -162,61 +228,70 @@ class ESMemoryNode:
         task_type: str = None,
     ) -> list[dict]:
         """
-        Find past routing decisions similar to this request.
-        Optionally filter by quality threshold or task type.
+        Find past routing decisions similar to this request, re-ranked by
+        composite k-line score (similarity × activation_weight × recency_weight).
 
-        Returns ranked list of past events - the router uses this to
-        ask "what model worked well for requests like this before?"
+        Fetches 3× candidates from ES so re-ranking has room to promote
+        frequently-activated / recently-used k-lines above pure cosine matches.
         """
         embedding = self._embed(request_text)
+        fetch_k = top_k * 3
 
-        # Build filter clauses
         filters = []
         if min_quality is not None:
             filters.append({"range": {"quality_score": {"gte": min_quality}}})
         if task_type:
             filters.append({"term": {"task_type": task_type}})
 
-        query = {
-            "knn": {
-                "field": "request_embedding",
-                "query_vector": embedding,
-                "k": top_k,
-                "num_candidates": top_k * 5,
-                "filter": {"bool": {"must": filters}} if filters else None,
-            },
-            "_source": {
-                "excludes": ["request_embedding"]   # don't return the vector
-            }
+        knn = {
+            "field": "request_embedding",
+            "query_vector": embedding,
+            "k": fetch_k,
+            "num_candidates": fetch_k * 5,
         }
+        if filters:
+            knn["filter"] = {"bool": {"must": filters}}
 
-        # Remove None filter
-        if not filters:
-            del query["knn"]["filter"]
+        resp = self.client.search(
+            index=INDEX_NAME,
+            body={"knn": knn, "_source": {"excludes": ["request_embedding"]}},
+        )
 
-        resp = self.client.search(index=INDEX_NAME, body=query)
+        hits = resp["hits"]["hits"]
+        scored = [(h, self._kline_score(h["_score"], h["_source"])) for h in hits]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
         return [
-            {**hit["_source"], "similarity_score": hit["_score"]}
-            for hit in resp["hits"]["hits"]
+            {**h["_source"], "similarity_score": h["_score"], "kline_score": ks}
+            for h, ks in scored[:top_k]
         ]
 
     def suggest_model(self, request_text: str) -> Optional[str]:
         """
         Ask the graph: what model should I use for this request?
-        Looks at the top 3 similar past events that had good outcomes.
-        Returns the most commonly used model among them.
+
+        Returns the model from the top k-line match — already ranked by
+        composite score (recency × activation × similarity), so the winner
+        is the most-practiced, recently-used, semantically-relevant precedent.
+        Falls back to majority vote among top-5 if the best has no quality signal.
         """
-        similar = self.find_similar(request_text, top_k=3, min_quality=0.7)
-        if not similar:
+        similar = self.find_similar(request_text, top_k=10)
+        good = [e for e in similar if (e.get("quality_score") or 0.5) >= 0.7]
+        if not good:
             return None
 
-        from collections import Counter
-        models = [e["model_selected"] for e in similar if e.get("model_selected")]
+        models = [e["model_selected"] for e in good if e.get("model_selected")]
         if not models:
             return None
 
-        best = Counter(models).most_common(1)[0][0]
-        return best
+        # Weight each vote by kline_score so high-activation results dominate
+        weights: dict[str, float] = {}
+        for e in good:
+            m = e.get("model_selected")
+            if m:
+                weights[m] = weights.get(m, 0.0) + e.get("kline_score", 1.0)
+
+        return max(weights, key=lambda m: weights[m])
 
     # ------------------------------------------------------------------
     # Inspection helpers
@@ -291,10 +366,19 @@ if __name__ == "__main__":
 
     time.sleep(1)  # let ES index settle
 
-    # Test similarity search
+    # Simulate 9001 being activated twice (memory consolidation path is well-practiced)
+    es.activate_kline("9001")
+    es.activate_kline("9001")
+
+    # Test similarity search — kline_score should now rank 9001 above a raw cosine tie
     print("\nSimilar to 'file and organize memory notes':")
     for r in es.find_similar("file and organize memory notes", top_k=3):
-        print(f"  [{r['task_type']}] {r['model_selected']} | score: {r['similarity_score']:.3f}")
+        print(
+            f"  [{r['task_type']}] {r['model_selected']} "
+            f"| similarity: {r['similarity_score']:.3f} "
+            f"| kline_score: {r['kline_score']:.3f} "
+            f"| activations: {r.get('activation_count', 0)}"
+        )
 
     # Test model suggestion
     suggestion = es.suggest_model("store these memory entries for later")

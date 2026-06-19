@@ -27,7 +27,6 @@ Estimated weekly savings at current volume: significant.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 import re
 import json
 import os
@@ -40,11 +39,41 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Token estimation (rough - 1 token ≈ 4 chars)
+# Token estimation and trimming — tiktoken if available, char/4 fallback
 # ---------------------------------------------------------------------------
 
-def estimate_tokens(text: str) -> int:
-    return len(text) // 4
+try:
+    import tiktoken
+    _enc = tiktoken.get_encoding("cl100k_base")
+
+    def estimate_tokens(text: str) -> int:
+        return len(_enc.encode(text))
+
+    def _trim_to_tokens(text: str, max_tokens: int) -> str:
+        """Trim from the front to at most max_tokens."""
+        tokens = _enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return _enc.decode(tokens[:max_tokens])
+
+    def _trim_tail_to_tokens(text: str, max_tokens: int) -> str:
+        """Keep only the last max_tokens (trim leading content)."""
+        tokens = _enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text
+        return _enc.decode(tokens[-max_tokens:])
+
+except ImportError:
+    def estimate_tokens(text: str) -> int:
+        return len(text) // 4
+
+    def _trim_to_tokens(text: str, max_tokens: int) -> str:
+        max_chars = max_tokens * 4
+        return text[:max_chars] if len(text) > max_chars else text
+
+    def _trim_tail_to_tokens(text: str, max_tokens: int) -> str:
+        max_chars = max_tokens * 4
+        return text[-max_chars:] if len(text) > max_chars else text
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +122,12 @@ class TruncateStrategy(CompressionStrategy):
     name = "truncate"
 
     def __init__(self, max_tokens: int = 5000):
-        self.max_chars = max_tokens * 4
+        self.max_tokens = max_tokens
 
     def compress(self, text: str) -> str:
-        if len(text) <= self.max_chars:
+        if estimate_tokens(text) <= self.max_tokens:
             return text
-        return text[:self.max_chars] + "\n\n[... context truncated by Reasoning Layer compressor ...]"
+        return _trim_to_tokens(text, self.max_tokens) + "\n\n[... context truncated by Reasoning Layer compressor ...]"
 
 
 class ConversationTitleStrategy(CompressionStrategy):
@@ -109,18 +138,18 @@ class ConversationTitleStrategy(CompressionStrategy):
     """
 
     name = "conversation_title"
-    MAX_CHARS = 2000 * 4
+    MAX_TOKENS = 2000
+    # Head+tail: 1000 tokens each — title signal comes from opening topic and recent turn
+    _HEAD_TOKENS = 1000
+    _TAIL_TOKENS = 1000
 
     def compress(self, text: str) -> str:
-        if len(text) <= self.MAX_CHARS:
+        if estimate_tokens(text) <= self.MAX_TOKENS:
             return text
 
-        # Extract just the first 1000 chars (opening context)
-        # and last 1000 chars (recent topic) - title comes from both
-        head = text[:4000]
-        tail = text[-4000:]
-        compressed = f"{head}\n\n[... middle of conversation omitted ...]\n\n{tail}"
-        return compressed
+        head = _trim_to_tokens(text, self._HEAD_TOKENS)
+        tail = _trim_tail_to_tokens(text, self._TAIL_TOKENS)
+        return f"{head}\n\n[... middle of conversation omitted ...]\n\n{tail}"
 
 
 class NotificationDecisionStrategy(CompressionStrategy):
@@ -131,13 +160,13 @@ class NotificationDecisionStrategy(CompressionStrategy):
     """
 
     name = "notification_decision"
-    MAX_CHARS = 5000 * 4
+    MAX_TOKENS = 5000
 
     def compress(self, text: str) -> str:
-        if len(text) <= self.MAX_CHARS:
+        if estimate_tokens(text) <= self.MAX_TOKENS:
             return text
-        # Keep the last portion - most recent context is what matters for notifications
-        return text[-self.MAX_CHARS:] + "\n\n[... earlier context omitted by compressor ...]"
+        # Keep the last portion — most recent context is what matters for notifications
+        return _trim_tail_to_tokens(text, self.MAX_TOKENS) + "\n\n[... earlier context omitted by compressor ...]"
 
 
 class MemoryOpsStrategy(CompressionStrategy):
@@ -149,14 +178,13 @@ class MemoryOpsStrategy(CompressionStrategy):
     """
 
     name = "memory_ops"
-    MAX_CHARS = 3000 * 4
+    MAX_TOKENS = 3000
 
     def compress(self, text: str) -> str:
-        if len(text) <= self.MAX_CHARS:
+        if estimate_tokens(text) <= self.MAX_TOKENS:
             return text
 
         # Strip anything that looks like large personality/soul sections
-        # These show up as markdown headers with lots of content
         stripped = re.sub(
             r'#{1,2} (SOUL|IDENTITY|Personality|Vibe|Core Truths|Communication Style)[^\n]*\n.*?(?=\n#{1,2} |\Z)',
             '[personality context omitted]',
@@ -164,9 +192,8 @@ class MemoryOpsStrategy(CompressionStrategy):
             flags=re.DOTALL
         )
 
-        # If still too long, truncate
-        if len(stripped) > self.MAX_CHARS:
-            stripped = stripped[:self.MAX_CHARS] + "\n[... truncated ...]"
+        if estimate_tokens(stripped) > self.MAX_TOKENS:
+            stripped = _trim_to_tokens(stripped, self.MAX_TOKENS) + "\n[... truncated ...]"
 
         return stripped
 
@@ -181,19 +208,21 @@ class ReplyAndSummaryStrategy(CompressionStrategy):
     name = "reply_summary"
 
     def __init__(self, max_tokens: int = 15000):
-        self.max_chars = max_tokens * 4
+        self.max_tokens = max_tokens
 
     def compress(self, text: str) -> str:
-        if len(text) <= self.max_chars:
+        total_tokens = estimate_tokens(text)
+        if total_tokens <= self.max_tokens:
             return text
 
         # Keep head (system context, ~20%) and tail (recent conversation, ~80%)
-        head_chars = self.max_chars // 5
-        tail_chars = self.max_chars - head_chars
+        head_tokens = self.max_tokens // 5
+        tail_tokens = self.max_tokens - head_tokens
 
-        head = text[:head_chars]
-        tail = text[-tail_chars:]
-        return f"{head}\n\n[... {len(text) - head_chars - tail_chars} chars of middle context omitted ...]\n\n{tail}"
+        head = _trim_to_tokens(text, head_tokens)
+        tail = _trim_tail_to_tokens(text, tail_tokens)
+        omitted = total_tokens - head_tokens - tail_tokens
+        return f"{head}\n\n[... ~{omitted:,} tokens of middle context omitted ...]\n\n{tail}"
 
 
 # ---------------------------------------------------------------------------

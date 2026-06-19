@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Astrid</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a0f;
+      color: #e8e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #1e1e2e;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #7c6af7, #a78bfa);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+      color: white;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: #c4b5fd;
+    }
+
+    .model-badge {
+      margin-left: auto;
+      font-size: 11px;
+      color: #4a4a6a;
+      font-family: "SF Mono", monospace;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      scroll-behavior: smooth;
+    }
+
+    .message {
+      max-width: 85%;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: #1e1b4b;
+      border: 1px solid #312e81;
+      color: #e0e7ff;
+      padding: 10px 14px;
+      border-radius: 18px 18px 4px 18px;
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      color: #e8e8f0;
+    }
+
+    .message.assistant .bubble {
+      background: #13131f;
+      border: 1px solid #1e1e2e;
+      padding: 10px 14px;
+      border-radius: 4px 18px 18px 18px;
+    }
+
+    .message.assistant .meta {
+      font-size: 11px;
+      color: #3a3a5a;
+      margin-top: 5px;
+      padding-left: 4px;
+      font-family: "SF Mono", monospace;
+    }
+
+    .typing {
+      display: flex;
+      gap: 4px;
+      padding: 12px 16px;
+      background: #13131f;
+      border: 1px solid #1e1e2e;
+      border-radius: 4px 18px 18px 18px;
+      align-self: flex-start;
+      width: fit-content;
+    }
+
+    .typing span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #6366f1;
+      animation: pulse 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes pulse {
+      0%, 60%, 100% { opacity: 0.2; transform: scale(0.8); }
+      30% { opacity: 1; transform: scale(1); }
+    }
+
+    #input-area {
+      padding: 12px 16px;
+      border-top: 1px solid #1e1e2e;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-shrink: 0;
+      background: #0a0a0f;
+    }
+
+    #input {
+      flex: 1;
+      background: #13131f;
+      border: 1px solid #1e1e2e;
+      border-radius: 20px;
+      padding: 10px 16px;
+      color: #e8e8f0;
+      font-size: 15px;
+      resize: none;
+      max-height: 120px;
+      line-height: 1.4;
+      outline: none;
+      font-family: inherit;
+    }
+
+    #input:focus {
+      border-color: #4338ca;
+    }
+
+    #input::placeholder { color: #3a3a5a; }
+
+    #send {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: #4338ca;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+
+    #send:hover { background: #6366f1; }
+    #send:disabled { background: #1e1e2e; cursor: not-allowed; }
+
+    #send svg { width: 16px; height: 16px; fill: white; }
+
+    code {
+      background: #1e1e2e;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: "SF Mono", monospace;
+      font-size: 13px;
+    }
+
+    pre {
+      background: #13131f;
+      border: 1px solid #1e1e2e;
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+
+    pre code { background: none; padding: 0; }
+
+    strong { color: #c4b5fd; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="avatar">✦</div>
+  <h1>ASTRID</h1>
+  <span class="model-badge" id="model-badge">—</span>
+</header>
+
+<div id="messages"></div>
+
+<div id="input-area">
+  <textarea id="input" placeholder="Ask Astrid..." rows="1"></textarea>
+  <button id="send">
+    <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+  </button>
+</div>
+
+<script>
+  const API = `http://${location.hostname}:8000/complete`;
+  const messagesEl = document.getElementById('messages');
+  const inputEl = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+  const modelBadge = document.getElementById('model-badge');
+
+  const history = [];
+
+  function autoResize() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  }
+
+  function scrollBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addMessage(role, content, meta) {
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    if (role === 'assistant') {
+      div.innerHTML = `<div class="bubble">${renderMarkdown(content)}</div>`;
+      if (meta) {
+        const m = document.createElement('div');
+        m.className = 'meta';
+        m.textContent = `${meta.model} · ${meta.task_type}`;
+        div.appendChild(m);
+        modelBadge.textContent = meta.model;
+      }
+    } else {
+      div.textContent = content;
+    }
+    messagesEl.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function addTyping() {
+    const div = document.createElement('div');
+    div.className = 'typing';
+    div.innerHTML = '<span></span><span></span><span></span>';
+    messagesEl.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function renderMarkdown(text) {
+    return text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>');
+  }
+
+  async function send() {
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    inputEl.value = '';
+    autoResize();
+    sendBtn.disabled = true;
+
+    addMessage('user', text);
+    history.push({ role: 'user', content: text });
+
+    const typing = addTyping();
+
+    try {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
+
+      const data = await res.json();
+      typing.remove();
+
+      addMessage('assistant', data.content, { model: data.model, task_type: data.task_type });
+      history.push({ role: 'assistant', content: data.content });
+
+    } catch (e) {
+      typing.remove();
+      addMessage('assistant', 'Connection error. Is the proxy running?', null);
+    }
+
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+
+  inputEl.addEventListener('input', autoResize);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  sendBtn.addEventListener('click', send);
+</script>
+</body>
+</html>

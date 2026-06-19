@@ -1,17 +1,7 @@
-spend.db
-.venv/
 .env
+*.db
 __pycache__/
 *.pyc
-
-# Terraform - never commit state or secrets
-**/.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfstate.lock.info
-terraform.tfvars
-.terraform.lock.hcl
-IP-EVIDENCE-2026-05-22.md
-spend.db
-spend.db
-__pycache__/
+proxy.log
+proxy.pid
+.mcp-venv/
