@@ -396,6 +396,15 @@ async def complete(req: CompleteRequest):
     route = await route_request(RouteRequest(prompt=user_msg, call_site=req.call_site))
     messages, system_msg = _prepare_messages(req, route.compressed_prompt)
 
+    # If the compressor discarded tokens, phosphorylate the event so the NREM
+    # consolidation pass knows to extract semantic/procedural value before those
+    # episodic details are gone from the context window.
+    if route.tokens_saved > 0 and ES_AVAILABLE and route.event_id:
+        try:
+            es.phosphorylate(route.event_id)
+        except Exception as e:
+            log.warning("phosphorylate failed for event %s: %s", route.event_id, e)
+
     t0 = time.time()
     kwargs = dict(model=route.model, messages=messages, max_tokens=4096, system=system_msg)
     if route.model in _THINKING_MODELS:
