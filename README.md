@@ -189,9 +189,9 @@ Four-store architecture. Every agent starts amnesiac. This one doesn't.
 
 **Episodic** — specific past events. Every routing decision, with quality scores and k-line activation. Gets smarter with every call.
 
-**Semantic** — durable facts extracted from experience. `"Sarah does not wear open-toed shoes in public spaces"`. Survives long after the original episode is forgotten.
+**Semantic** — durable facts extracted from experience. `"This user prefers concise responses over detailed explanations"`. Survives long after the original episode is forgotten.
 
-**Procedural** — skills and routines. `"always choose closed-toe shoes at public venues"`. The rule without the story.
+**Procedural** — skills and routines. `"always lead with the answer, details follow"`. The rule without the story.
 
 **Epigenomic** — marks on the other three stores. Controls what gets recalled vs. suppressed. Not a store of memories — a gate on them.
 
@@ -220,15 +220,15 @@ es = ESMemoryLayer()
 
 # Store a durable fact
 es.store_semantic(
-    "Sarah does not wear open-toed shoes in public spaces",
-    subject="Sarah",
-    confidence=0.98,
+    "This user prefers concise bullet-point responses over prose",
+    subject="user-123",
+    confidence=0.95,
 )
 
 # Store a procedural rule
 es.store_procedural(
-    "no-open-toed-shoes",
-    "Always choose closed-toe shoes at public venues",
+    "lead-with-answer",
+    "Always state the conclusion first, then supporting detail",
 )
 
 # Recall across all stores — merged by k-line score
