@@ -447,6 +447,59 @@ class ESMemoryLayer:
             body={"doc": {"tier": tier}},
         )
 
+    def decay_tiers(self) -> dict:
+        """
+        Demote memories that haven't been activated within type-specific thresholds.
+
+        Thresholds (days without activation before demotion):
+          Episodic:   active→warm 30d,  warm→backlog 60d
+          Procedural: active→warm 90d,  warm→backlog 180d
+          Semantic:   active→warm 180d, warm→backlog 365d
+
+        Returns counts of demoted documents per transition.
+        """
+        now_ms = int(time.time() * 1000)
+        DAY_MS = 86_400_000
+
+        THRESHOLDS = {
+            EPISODIC_INDEX:   {"active": 30  * DAY_MS, "warm": 60  * DAY_MS},
+            PROCEDURAL_INDEX: {"active": 90  * DAY_MS, "warm": 180 * DAY_MS},
+            SEMANTIC_INDEX:   {"active": 180 * DAY_MS, "warm": 365 * DAY_MS},
+        }
+
+        demoted = {"active_to_warm": 0, "warm_to_backlog": 0}
+
+        for index, thresholds in THRESHOLDS.items():
+            for from_tier, to_tier, threshold_ms in [
+                ("active", "warm",    thresholds["active"]),
+                ("warm",   "backlog", thresholds["warm"]),
+            ]:
+                cutoff_ms = now_ms - threshold_ms
+                try:
+                    resp = self.client.update_by_query(
+                        index=index,
+                        body={
+                            "query": {
+                                "bool": {
+                                    "must": [
+                                        {"term": {"tier": from_tier}},
+                                        {"range": {"last_activated_ts": {"lt": cutoff_ms}}},
+                                    ]
+                                }
+                            },
+                            "script": {
+                                "source": f"ctx._source.tier = '{to_tier}'",
+                            },
+                        },
+                    )
+                    count = resp.get("updated", 0)
+                    key = f"{from_tier}_to_{to_tier}"
+                    demoted[key] = demoted.get(key, 0) + count
+                except Exception:
+                    pass  # index may not exist yet on a fresh install
+
+        return demoted
+
     # ------------------------------------------------------------------
     # Semantic store
     # ------------------------------------------------------------------

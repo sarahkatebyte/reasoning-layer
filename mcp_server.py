@@ -5,11 +5,12 @@ Exposes the reasoning layer as callable tools inside any MCP-compatible host:
 Claude Code, Cursor, VS Code, custom agents, or any platform that speaks MCP.
 
 Tools:
-  complete   — Full inference: route + compress + call model + log outcome
-  route      — Model recommendation for a task, without making the call
-  remember   — Persist a fact to long-term semantic memory (survives across sessions)
-  recall     — Retrieve relevant memories across all stores (episodic, semantic, procedural)
-  health     — Check proxy and memory layer status
+  complete     — Full inference: route + compress + call model + log outcome
+  route        — Model recommendation for a task, without making the call
+  remember     — Persist a fact to long-term semantic memory (survives across sessions)
+  recall       — Retrieve relevant memories across all stores (episodic, semantic, procedural)
+  consolidate  — Run the NREM pass: extract semantic/procedural from compressed episodes
+  health       — Check proxy and memory layer status
 
 Setup:
   pip install mcp httpx
@@ -200,6 +201,47 @@ async def recall(query: str, top_k: int = 5) -> str:
             return _PROXY_DOWN_MSG
         except Exception as e:
             return f"Recall failed: {e}"
+
+
+@mcp.tool()
+async def consolidate(batch_size: int = 50) -> str:
+    """
+    Run the NREM consolidation pass.
+
+    Reads episodic events that were flagged during context compression
+    (phosphorylated), calls Claude Haiku to extract durable semantic facts
+    and procedural patterns, writes them to their respective memory stores,
+    then runs a tier decay pass to demote cold memories to warm/backlog.
+
+    Run this periodically to prevent information loss from compression.
+    Safe to call manually at any time — idempotent if nothing is pending.
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            resp = await client.post(
+                f"{PROXY_URL}/consolidate",
+                params={"batch_size": batch_size}
+            )
+            resp.raise_for_status()
+            d = resp.json()
+
+            nrem  = d.get("nrem", {})
+            decay = d.get("tier_decay", {})
+            lines = [
+                f"Consolidation complete ({d.get('elapsed_seconds', '?')}s)",
+                f"  Episodes processed:  {nrem.get('processed', 0)}",
+                f"  Facts extracted:     {nrem.get('facts_stored', 0)}",
+                f"  Skills extracted:    {nrem.get('skills_stored', 0)}",
+                f"  Skipped (too short): {nrem.get('skipped', 0)}",
+                f"  active → warm:       {decay.get('active_to_warm', 0)}",
+                f"  warm → backlog:      {decay.get('warm_to_backlog', 0)}",
+            ]
+            return "\n".join(lines)
+
+        except httpx.ConnectError:
+            return _PROXY_DOWN_MSG
+        except Exception as e:
+            return f"Consolidation failed: {e}"
 
 
 @mcp.tool()

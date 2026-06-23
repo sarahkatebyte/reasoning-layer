@@ -2,9 +2,9 @@
 Reasoning Layer - Context Builder
 -----------------------------------
 Three jobs:
-  1. classify_task(prompt) -> task type string
+  1. classify_task(prompt) -> weighted dict over task types (multi-label)
   2. build_context(prompt, **kwargs) -> trimmed context dict
-  3. load_system_prompt() -> full Astrid system prompt from SOUL.md + essentials.md
+  3. select_model(weights, similar) -> (model_id, reason)
 """
 
 import os
@@ -12,54 +12,45 @@ import re
 from pathlib import Path
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
-# System prompt loader - assembles Astrid's personality + user knowledge
+# System prompt loader
 # ---------------------------------------------------------------------------
 
-_WORKSPACE = Path(os.environ.get("ASTRID_WORKSPACE", Path.home() / ".astrid"))
-SOUL_PATH = _WORKSPACE / "SOUL.md"
-ESSENTIALS_PATH = _WORKSPACE / "pkb/essentials.md"
+_WORKSPACE = Path(os.environ.get("REASONING_LAYER_WORKSPACE", Path.home() / ".reasoning-layer"))
+_SYSTEM_PROMPT_PATH = _WORKSPACE / "system_prompt.md"
 
 
 def _load_file(path: Path) -> str:
-    """Load a file and strip comment lines (lines starting with _)."""
     if not path.exists():
         return ""
-    lines = path.read_text().splitlines()
-    return "\n".join(l for l in lines if not l.startswith("_ ") and l != "_")
+    return path.read_text().strip()
 
 
 def load_system_prompt() -> str:
     """
-    Assemble the full Astrid system prompt from SOUL.md and essentials.md.
-    Strips internal comment lines. Falls back to a minimal prompt if files not found.
+    Load the agent system prompt from $REASONING_LAYER_WORKSPACE/system_prompt.md.
+    Falls back to a generic agent prompt if the file doesn't exist.
     """
-    soul = _load_file(SOUL_PATH)
-    essentials = _load_file(ESSENTIALS_PATH)
-
-    if not soul and not essentials:
-        return "You are Astrid. You are sharp, warm, direct, and have a dry sense of humor. You know your user Sarah well."
-
-    parts = []
-    if soul:
-        parts.append(soul)
-    if essentials:
-        parts.append(essentials)
-
-    return "\n\n---\n\n".join(parts)
+    content = _load_file(_SYSTEM_PROMPT_PATH)
+    if content:
+        return content
+    return "You are a helpful AI assistant."
 
 
 # ---------------------------------------------------------------------------
-# Task type classifier (heuristic - gets replaced by learned classifier later)
+# Multi-label task classifier
 # ---------------------------------------------------------------------------
 
 TASK_PATTERNS = {
     "planning": [
-        r"\bbuild-plan\b",
-        r"\bdo-plan\b",
-        r"\bbuild plan\b",
-        r"\bdo plan\b",
+        r"\bbuild.plan\b",
+        r"\bdo.plan\b",
+        r"\broadmap\b",
+        r"\bstrateg\w*\b",
+        r"\bstep.by.step\b",
+        r"\bbreakdown\b",
+        r"\bmilestone\w*\b",
+        r"\bschedule\b.*\btask\w*\b",
     ],
     "memory_ops": [
         r"\bconsolidat\w*\b",
@@ -78,11 +69,11 @@ TASK_PATTERNS = {
         r"\bdesign\b.*\bsystem\b",
         r"\btradeoff\w*\b",
         r"\bcompare\b.*\bapproach\w*\b",
-        r"\bstep.by.step\b",
         r"\bwhy\b.*\bbecause\b",
         r"\bexplain\b.*\bhow\b",
         r"\bdebug\b",
         r"\brefactor\b",
+        r"\bdiagnos\w*\b",
     ],
     "simple_retrieval": [
         r"\bwhat is\b",
@@ -110,36 +101,46 @@ TASK_PATTERNS = {
         r"\bcreate\b.*\bnarrative\b",
         r"\bdraft\b",
         r"\bpoem\b",
-        r"\bcreatif\w*\b",
+        r"\bcreativ\w*\b",
         r"\bimagine\b",
         r"\bbrainstorm\b",
     ],
 }
 
 
-def classify_task(prompt: str) -> str:
+def classify_task(prompt: str) -> dict[str, float]:
     """
-    Classify a prompt into a task type using keyword heuristics.
-    Returns one of: reasoning, memory_ops, simple_retrieval, structured_output, creative
-    Falls back to 'reasoning' if unclear (better to over-invest than under-invest).
+    Classify a prompt into a weighted distribution over task types.
+
+    Returns a normalised dict, e.g.:
+        {"reasoning": 0.6, "creative": 0.4}
+
+    Rather than forcing one label, this exposes the true ambiguity so the
+    router can make a blended or dominant-weighted decision downstream.
+    Falls back to {"reasoning": 1.0} when nothing matches.
     """
     lower = prompt.lower()
-    scores = {task: 0 for task in TASK_PATTERNS}
+    raw: dict[str, float] = {}
 
     for task_type, patterns in TASK_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, lower):
-                scores[task_type] += 1
+                raw[task_type] = raw.get(task_type, 0.0) + 1.0
 
-    best = max(scores, key=scores.get)
-    if scores[best] == 0:
-        return "reasoning"  # safe default - sonnet handles unknown tasks well
+    total = sum(raw.values())
+    if total == 0:
+        return {"reasoning": 1.0}  # safest default — sonnet handles unknown tasks well
 
-    return best
+    return {k: v / total for k, v in sorted(raw.items(), key=lambda x: -x[1])}
+
+
+def dominant_task(weights: dict[str, float]) -> str:
+    """Return the highest-weight task type from a classify_task() result."""
+    return max(weights, key=weights.get)
 
 
 # ---------------------------------------------------------------------------
-# Context builder - trims the context dict before routing
+# Context builder
 # ---------------------------------------------------------------------------
 
 def build_context(
@@ -150,33 +151,32 @@ def build_context(
 ) -> dict:
     """
     Builds a lean context dict for the model call.
-    Trims conversation history to the last N turns.
-    Strips system prompt sections that aren't needed for the task type.
+    Trims conversation history and system prompt based on dominant task type.
 
-    Returns a dict ready to pass to the model API.
+    Returns a dict ready to pass to the model API, including the full
+    task_weights distribution for downstream use.
     """
-    task_type = classify_task(prompt)
+    weights = classify_task(prompt)
+    dom = dominant_task(weights)
 
-    # Trim history - most tasks only need recent turns
     history = conversation_history or []
-    if task_type in ("memory_ops", "simple_retrieval", "structured_output"):
-        # These tasks don't need deep history
+    if dom in ("memory_ops", "simple_retrieval", "structured_output"):
         history = history[-4:]
     else:
         history = history[-max_history_turns:]
 
-    # Trim system prompt for memory ops - strip personality sections
     trimmed_system = system_prompt or ""
-    if task_type == "memory_ops" and trimmed_system:
+    if dom == "memory_ops" and trimmed_system:
         trimmed_system = re.sub(
             r'#{1,2} (SOUL|IDENTITY|Personality|Vibe|Core Truths|Communication Style)[^\n]*\n.*?(?=\n#{1,2} |\Z)',
             '[personality context omitted]',
             trimmed_system,
-            flags=re.DOTALL
+            flags=re.DOTALL,
         )
 
     return {
-        "task_type": task_type,
+        "task_type":    dom,        # dominant label — used for logging / routing
+        "task_weights": weights,    # full distribution — exposed for inspection
         "prompt": prompt,
         "system_prompt": trimmed_system,
         "conversation_history": history,
@@ -188,33 +188,43 @@ def build_context(
 # ---------------------------------------------------------------------------
 
 ROUTING_TABLE = {
-    # Opus: tasks requiring multi-step planning, holding large context, structural judgment
-    "planning":          ("claude-opus-4-8",   "plan creation/execution -> opus (multi-step, structural judgment)"),
-    "reasoning":         ("claude-sonnet-4-6", "reasoning -> sonnet (opus reserved for planning)"),
-    # Haiku: pure retrieval, no synthesis needed
-    "memory_ops":        ("claude-haiku-4-5",  "memory task -> haiku (cheapest)"),
-    "simple_retrieval":  ("claude-haiku-4-5",  "simple lookup -> haiku (cheapest)"),
-    # Sonnet: everything else
-    "creative":          ("claude-sonnet-4-6", "creative task -> sonnet"),
-    "structured_output": ("claude-sonnet-4-6", "structured output -> sonnet"),
+    "planning":          ("claude-opus-4-8",   "planning → opus (multi-step structural judgment)"),
+    "reasoning":         ("claude-sonnet-4-6", "reasoning → sonnet (opus reserved for planning)"),
+    "memory_ops":        ("claude-haiku-4-5",  "memory ops → haiku (cheapest, fast enough)"),
+    "simple_retrieval":  ("claude-haiku-4-5",  "simple retrieval → haiku (cheapest)"),
+    "creative":          ("claude-sonnet-4-6", "creative → sonnet (nuance without opus cost)"),
+    "structured_output": ("claude-sonnet-4-6", "structured output → sonnet (reliable schema adherence)"),
 }
 
-DEFAULT_MODEL = ("claude-sonnet-4-6", "unclassified -> sonnet (default)")
+DEFAULT_MODEL = ("claude-sonnet-4-6", "unclassified → sonnet (default)")
 
 
-def select_model(task_type: str, similar: list) -> tuple[str, str]:
+def select_model(weights: dict[str, float], similar: list) -> tuple[str, str]:
     """
-    Select model based on task type. If ES has strong past signal with confirmed
-    quality, prefer that. Null quality_score is treated as neutral (0.5) — not
-    excluded — so early events before scoring existed still contribute signal.
+    Select a model from a multi-label task weight distribution.
+
+    ES k-line override fires when a past decision scored above 0.85 similarity
+    with confirmed quality. Otherwise routes by dominant task type.
+
+    Surfaces ambiguity in the reason string when no single label dominates.
     """
+    # ES override — same logic as before, but now explicit about weights
     for s in similar:
-        # kline_score available after activation/decay was added; fall back to raw cosine
-        score = s.get("kline_score") or s.get("similarity_score", 0)
+        score   = s.get("kline_score") or s.get("similarity_score", 0)
         quality = s.get("quality_score")
-        effective_quality = quality if quality is not None else 0.5
+        eff_q   = quality if quality is not None else 0.5
         past_model = s.get("model_selected")
-        if score > 0.85 and effective_quality >= 0.7 and past_model:
-            return past_model, f"ES k-line match (score={score:.2f}, quality={effective_quality:.2f})"
+        if score > 0.85 and eff_q >= 0.7 and past_model:
+            return past_model, f"ES k-line match (score={score:.2f}, quality={eff_q:.2f})"
 
-    return ROUTING_TABLE.get(task_type, DEFAULT_MODEL)
+    dom = dominant_task(weights)
+    model, base_reason = ROUTING_TABLE.get(dom, DEFAULT_MODEL)
+
+    # Surface ambiguity when dominant weight is below 50% — useful for debugging
+    if weights.get(dom, 1.0) < 0.5:
+        dist = ", ".join(f"{t}={w:.0%}" for t, w in list(weights.items())[:3])
+        reason = f"multi-label [{dist}] → dominant={dom} → {model}"
+    else:
+        reason = base_reason
+
+    return model, reason

@@ -276,7 +276,8 @@ export REDIS_URL=redis://localhost:6379
 ANTHROPIC_API_KEY=sk-ant-...
 REDIS_URL=redis://localhost:6379
 ES_HOST=http://localhost:9200
-ASTRID_WORKSPACE=/path/to/.astrid    # optional — loads system prompt from SOUL.md
+REASONING_LAYER_WORKSPACE=/path/to/agent-config   # optional — loads system_prompt.md
+REASONING_LAYER_URL=http://localhost:8000          # MCP server target
 ```
 
 ### Docker Compose
@@ -353,9 +354,10 @@ requests.post("http://localhost:8000/feedback", json={
 - [x] Redis pending store — multi-agent safe, atomic SETEX/GETDEL
 - [x] Adaptive thinking — auto-enabled for Opus and Sonnet
 - [x] MCP server — reasoning layer tools over MCP
-- [ ] NREM consolidation pass — episodic → semantic/procedural extraction
+- [x] NREM consolidation pass — episodic → semantic/procedural extraction via Haiku
+- [x] Multi-label task classification — weight distribution instead of single label
+- [ ] Active tier management — scheduled decay job to demote cold memories
 - [ ] Multi-tenant memory — user_id/team_id scoping for team deployments
-- [ ] Probabilistic routing — multi-label task classification
 - [ ] GitHub Actions CI
 - [ ] Postgres backend option
 

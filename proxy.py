@@ -42,7 +42,7 @@ from reasoning_layer import ReasoningLogger, ReasoningEvent
 
 load_dotenv()
 
-# Load Astrid's system prompt once at startup
+# Load agent system prompt once at startup
 SYSTEM_PROMPT = load_system_prompt()
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -250,7 +250,8 @@ async def route_request(req: RouteRequest):
         )
 
     compressed = compression.compressed_text
-    task_type = classify_task(compressed)
+    task_weights = classify_task(compressed)
+    task_type = max(task_weights, key=task_weights.get)
 
     # Step 2: query ES for similar past decisions
     similar = []
@@ -261,7 +262,7 @@ async def route_request(req: RouteRequest):
             log.warning("ES find_similar failed, falling back to SQLite routing: %s", e)
 
     # Step 3: select model
-    model, reason = select_model(task_type, similar)
+    model, reason = select_model(task_weights, similar)
 
     # Step 4: store pending event so /log can close the loop
     event_id = str(uuid.uuid4())[:8]
@@ -357,7 +358,8 @@ async def suggest_model(req: SuggestRequest):
     Dry-run model suggestion. No logging, no side effects.
     Useful for pre-flight checks or UI previews.
     """
-    task_type = classify_task(req.prompt)
+    task_weights = classify_task(req.prompt)
+    task_type = max(task_weights, key=task_weights.get)
 
     similar = []
     suggestion = None
@@ -367,19 +369,19 @@ async def suggest_model(req: SuggestRequest):
         try:
             candidates = es.find_similar(req.prompt, top_k=10)
             good = [e for e in candidates if (e.get("quality_score") or 0.5) >= 0.7]
-            weights: dict[str, float] = {}
+            model_votes: dict[str, float] = {}
             for e in good:
                 m = e.get("model_selected")
                 if m:
-                    weights[m] = weights.get(m, 0.0) + e.get("kline_score", 1.0)
-            if weights:
-                suggestion = max(weights, key=lambda m: weights[m])
+                    model_votes[m] = model_votes.get(m, 0.0) + e.get("kline_score", 1.0)
+            if model_votes:
+                suggestion = max(model_votes, key=lambda m: model_votes[m])
                 confidence = 0.85 if len(good) >= 3 else 0.65
             similar = candidates[:3]
         except Exception as e:
             log.warning("ES find_similar failed, falling back to task-type routing: %s", e)
 
-    model, _ = select_model(task_type, similar)
+    model, _ = select_model(task_weights, similar)
     if suggestion:
         model = suggestion
 
@@ -494,6 +496,26 @@ async def complete(req: CompleteRequest):
         "tokens_saved": route.tokens_saved,
         "task_type": route.task_type,
     }
+
+
+@app.post("/consolidate")
+async def consolidate(batch_size: int = 50):
+    """
+    Trigger the NREM consolidation pass on-demand.
+    Reads phosphorylated episodic events, extracts semantic/procedural value,
+    then runs tier decay across all memory stores.
+    """
+    if not ES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Memory store unavailable — ES not running")
+    if client is None:
+        raise HTTPException(status_code=503, detail="Anthropic client not configured")
+    try:
+        from consolidator import Consolidator
+        c = Consolidator(es=es, anthropic_client=anthropic_sdk.AsyncAnthropic(api_key=ANTHROPIC_API_KEY))
+        result = await c.run(batch_size=batch_size)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Consolidation failed: {e}")
 
 
 @app.post("/memory/remember")
