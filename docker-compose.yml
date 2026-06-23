@@ -6,13 +6,14 @@ version: "3.8"
 # No Elastic Cloud account needed — everything runs locally.
 #
 # Usage:
-#   docker compose up          # start ES in the background
+#   docker compose up -d        # start ES + Redis in the background
 #   docker compose run cli viz  # ASCII cost/savings charts
 #   docker compose run cli stats
 #   docker compose run cli search "summarize recent messages"
 #   docker compose run cli suggest "file memory notes"
 #
-# ES is available at http://localhost:9200 while the stack is running.
+# ES is available at http://localhost:9200
+# Redis is available at redis://localhost:6379
 
 services:
 
@@ -33,16 +34,30 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:alpine
+    container_name: reasoning-layer-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   cli:
     build: .
     container_name: reasoning-layer-cli
     depends_on:
       elasticsearch:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       # Point at the local ES container - no API key needed (security disabled)
       - ES_HOST=http://elasticsearch:9200
       - ES_API_KEY=
+      - REDIS_URL=redis://redis:6379
     volumes:
       - ./spend.db:/app/spend.db          # mount your existing SQLite data
       - ./compressor_config.yaml:/app/compressor_config.yaml  # optional: custom config
