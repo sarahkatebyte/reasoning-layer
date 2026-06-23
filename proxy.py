@@ -206,6 +206,15 @@ class SuggestResponse(BaseModel):
     confidence: float
     based_on: list = []
 
+class RememberRequest(BaseModel):
+    fact: str
+    subject: Optional[str] = None
+    confidence: float = 1.0
+
+class RecallRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -485,6 +494,53 @@ async def complete(req: CompleteRequest):
         "tokens_saved": route.tokens_saved,
         "task_type": route.task_type,
     }
+
+
+@app.post("/memory/remember")
+async def memory_remember(req: RememberRequest):
+    """
+    Store a semantic fact in long-term memory.
+    Persists across sessions — available to all agents that share this reasoning layer.
+    """
+    if not ES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Memory store unavailable — ES not running")
+    try:
+        doc_id = es.store_semantic(
+            fact_text=req.fact,
+            subject=req.subject,
+            confidence=req.confidence,
+        )
+        return {"ok": True, "id": doc_id, "fact": req.fact}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store memory: {e}")
+
+
+@app.post("/memory/recall")
+async def memory_recall(req: RecallRequest):
+    """
+    Retrieve relevant memories across all stores (episodic, semantic, procedural).
+    Returns results ranked by k-line score — recency × activation × similarity.
+    """
+    if not ES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Memory store unavailable — ES not running")
+    try:
+        results = es.recall_all(req.query, top_k=req.top_k)
+        return {
+            "query": req.query,
+            "results": [
+                {
+                    "memory_type": r.get("memory_type"),
+                    "content": r.get("fact_text") or r.get("skill_description") or r.get("request_text", ""),
+                    "subject": r.get("subject"),
+                    "tier": r.get("tier"),
+                    "kline_score": round(r.get("kline_score", 0), 4),
+                    "similarity_score": round(r.get("similarity_score", 0), 4),
+                }
+                for r in results
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recall failed: {e}")
 
 
 @app.get("/")
