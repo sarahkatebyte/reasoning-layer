@@ -18,6 +18,7 @@ Usage:
     uvicorn proxy:app --reload --port 8000
 """
 
+import json
 import logging
 import os
 import time
@@ -73,6 +74,77 @@ app.add_middleware(
 
 compressor = CompressorNode()
 logger = ReasoningLogger()
+
+
+# ---------------------------------------------------------------------------
+# Pending event store — Redis if available, in-memory fallback for local dev
+# ---------------------------------------------------------------------------
+
+_PENDING_TTL_SECS = 3600  # 1 hour
+
+
+class _PendingStore:
+    """
+    Stores routing events between /route and /log calls.
+
+    Redis mode  — shared across all proxy workers. Uses SETEX (atomic set+TTL)
+                  and GETDEL (atomic get+delete). TTL auto-expires stale events,
+                  no prune loop needed. Safe under concurrent writes.
+
+    Fallback    — single in-memory dict. Fine for local dev. Breaks under
+                  multiple workers or concurrent agents (use Redis in production).
+    """
+
+    def __init__(self, redis_url: str = None, ttl: int = _PENDING_TTL_SECS):
+        self._ttl = ttl
+        self._redis = None
+        self._mem: dict[str, dict] = {}
+
+        if redis_url:
+            try:
+                import redis as redis_lib
+                client = redis_lib.Redis.from_url(redis_url, decode_responses=True)
+                client.ping()
+                self._redis = client
+                log.info("Redis connected (%s) — pending events are shared across workers", redis_url)
+            except Exception as e:
+                log.warning("Redis unavailable (%s) — falling back to in-memory store (single-process only)", e)
+
+    @property
+    def backend(self) -> str:
+        return "redis" if self._redis else "memory"
+
+    def put(self, event_id: str, data: dict):
+        """Store event. TTL starts now — if /log never comes, it auto-expires."""
+        if self._redis:
+            self._redis.setex(f"pending:{event_id}", self._ttl, json.dumps(data))
+        else:
+            self._mem[event_id] = {**data, "_started_at": time.time()}
+
+    def pop(self, event_id: str) -> dict | None:
+        """Atomically retrieve and delete. Returns None if expired or never existed."""
+        if self._redis:
+            raw = self._redis.getdel(f"pending:{event_id}")
+            return json.loads(raw) if raw else None
+        return self._mem.pop(event_id, None)
+
+    def size(self) -> int:
+        if self._redis:
+            return len(self._redis.keys("pending:*"))
+        return len(self._mem)
+
+    def prune(self):
+        """Prune stale entries. Only does work in memory fallback — Redis TTL handles it."""
+        if self._redis:
+            return
+        cutoff = time.time() - self._ttl
+        stale = [eid for eid, ev in self._mem.items() if ev.get("_started_at", 0) < cutoff]
+        for eid in stale:
+            log.warning("Pruning stale pending event %s (no /log within TTL)", eid)
+            del self._mem[eid]
+
+
+_pending = _PendingStore(redis_url=os.environ.get("REDIS_URL"))
 
 
 def score_response_quality(response_text: str, output_tokens: Optional[int] = None) -> float:
@@ -136,22 +208,6 @@ class SuggestResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory event store (maps event_id -> ReasoningEvent for log endpoint)
-# ---------------------------------------------------------------------------
-
-_pending_events: dict[str, dict] = {}
-_PENDING_TTL_SECS = 3600  # 1 hour — events older than this are pruned on next /route call
-
-
-def _prune_pending():
-    cutoff = time.time() - _PENDING_TTL_SECS
-    stale = [eid for eid, ev in _pending_events.items() if ev["started_at"] < cutoff]
-    for eid in stale:
-        log.warning("Pruning stale pending event %s (no /log call received within TTL)", eid)
-        del _pending_events[eid]
-
-
-# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -165,7 +221,7 @@ async def route_request(req: RouteRequest):
     4. Select the best model
     5. Return routing decision + compressed prompt
     """
-    _prune_pending()
+    _pending.prune()
 
     # Step 1: compress
     compression = compressor.compress(
@@ -200,15 +256,14 @@ async def route_request(req: RouteRequest):
 
     # Step 4: store pending event so /log can close the loop
     event_id = str(uuid.uuid4())[:8]
-    _pending_events[event_id] = {
+    _pending.put(event_id, {
         "call_site": req.call_site,
         "task_type": task_type,
         "model_selected": model,
         "routing_reason": reason,
         "input_tokens": compression.compressed_tokens,
         "request_text": compressed,
-        "started_at": time.time(),
-    }
+    })
 
     return RouteResponse(
         event_id=event_id,
@@ -230,7 +285,7 @@ async def log_outcome(req: LogRequest):
     Close the feedback loop after a model call completes.
     Records outcome to SQLite and indexes to ES for future routing.
     """
-    pending = _pending_events.pop(req.event_id, None)
+    pending = _pending.pop(req.event_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"No pending event with id '{req.event_id}'")
 
@@ -443,7 +498,8 @@ async def health():
         "ok": True,
         "anthropic_ready": client is not None,
         "es_available": ES_AVAILABLE,
-        "pending_events": len(_pending_events),
+        "pending_events": _pending.size(),
+        "pending_store": _pending.backend,
     }
 
 
