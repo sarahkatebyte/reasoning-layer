@@ -292,3 +292,152 @@ call_sites:
         result = compressor.compress(make_text(1000), call_site="Reply Suggestion")
         assert result.blocked is False
         assert result.strategy_applied == "disabled"
+
+    def test_all_strategy_names_load(self, tmp_path):
+        config_content = """
+call_sites:
+  "A": {strategy: head_tail}
+  "B": {strategy: notification}
+  "C": {strategy: memory_ops}
+  "D": {strategy: reply_summary, max_tokens: 5000}
+  "E": {strategy: truncate, max_tokens: 2000}
+"""
+        config_file = tmp_path / "all_strategies.yaml"
+        config_file.write_text(config_content)
+        # Should not raise
+        compressor = CompressorNode.from_config(str(config_file))
+        assert len(compressor.strategies) == 5
+
+
+# ---------------------------------------------------------------------------
+# CompressionResult.summary()
+# ---------------------------------------------------------------------------
+
+class TestCompressionResultSummary:
+    def test_non_blocked_summary_contains_call_site(self):
+        compressor = CompressorNode()
+        text = make_text(50000)
+        result = compressor.compress(text, call_site="Conversation Title")
+        summary = result.summary()
+        assert "Conversation Title" in summary
+        assert "BLOCKED" not in summary
+
+    def test_non_blocked_summary_shows_token_counts(self):
+        compressor = CompressorNode()
+        text = make_text(50000)
+        result = compressor.compress(text, call_site="Conversation Title")
+        summary = result.summary()
+        # Should contain "→" and "tokens"
+        assert "→" in summary
+        assert "tokens" in summary
+
+    def test_blocked_summary_shows_tokens_saved(self):
+        compressor = CompressorNode()
+        result = compressor.compress(make_text(5000), call_site="Reply Suggestion")
+        summary = result.summary()
+        assert "BLOCKED" in summary
+        assert "tokens saved" in summary
+
+
+# ---------------------------------------------------------------------------
+# min_savings_tokens threshold
+# ---------------------------------------------------------------------------
+
+class TestMinSavingsThreshold:
+    def test_custom_threshold_suppresses_compression(self):
+        compressor = CompressorNode()
+        # Text that would normally compress but savings are below a very high threshold
+        text = make_text(600)
+        result = compressor.compress(text, call_site="Conversation Title", min_savings_tokens=999999)
+        assert result.tokens_saved == 0
+        assert result.strategy_applied == "passthrough (savings below threshold)"
+
+    def test_zero_threshold_always_compresses(self):
+        compressor = CompressorNode()
+        text = make_text(50000)
+        result = compressor.compress(text, call_site="Conversation Title", min_savings_tokens=0)
+        assert result.tokens_saved > 0
+
+    def test_task_type_defaults_to_unknown(self):
+        compressor = CompressorNode()
+        result = compressor.compress("hello", call_site="Conversation Title")
+        assert result.task_type == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# MemoryOpsStrategy — all personality section variants
+# ---------------------------------------------------------------------------
+
+class TestMemoryOpsStrategyPatterns:
+    """Each heading variant in the regex should be stripped when text is large enough."""
+
+    LARGE_PREFIX = "filler " * 2000  # ~2000 tokens of noise before the block
+
+    def _make_block(self, heading: str) -> str:
+        body = "Deep personality content. " * 300
+        return f"{self.LARGE_PREFIX}\n{heading}\n{body}\n\n## Memory\nKeep this.\n"
+
+    def _should_strip(self, heading: str) -> bool:
+        strategy = MemoryOpsStrategy()
+        text = self._make_block(heading)
+        result = strategy.compress(text)
+        return "personality context omitted" in result or len(result) < len(text)
+
+    def test_strips_identity_section(self):
+        assert self._should_strip("## IDENTITY")
+
+    def test_strips_personality_section(self):
+        assert self._should_strip("## Personality")
+
+    def test_strips_vibe_section(self):
+        assert self._should_strip("## Vibe")
+
+    def test_strips_core_truths_section(self):
+        assert self._should_strip("## Core Truths")
+
+    def test_strips_communication_style_section(self):
+        assert self._should_strip("## Communication Style")
+
+
+# ---------------------------------------------------------------------------
+# savings_projection()
+# ---------------------------------------------------------------------------
+
+class TestSavingsProjection:
+    def test_returns_total_key(self):
+        compressor = CompressorNode()
+        result = compressor.savings_projection({"Conversation Title": 91816})
+        assert "__total_weekly_tokens_saved__" in result
+
+    def test_blocked_site_saves_all_tokens(self):
+        compressor = CompressorNode()
+        avg_tokens = 125077
+        result = compressor.savings_projection({"Reply Suggestion": avg_tokens}, calls_per_week=1)
+        data = result["Reply Suggestion"]
+        assert data["strategy"] == "blocked"
+        assert data["tokens_saved_per_call"] == data["avg_input_tokens"]
+
+    def test_total_is_sum_of_weekly_savings(self):
+        compressor = CompressorNode()
+        call_sites = {
+            "Conversation Title": 91816,
+            "Notification Decision": 55781,
+        }
+        result = compressor.savings_projection(call_sites, calls_per_week=10)
+        expected_total = sum(
+            result[k]["weekly_tokens_saved"]
+            for k in call_sites
+        )
+        assert result["__total_weekly_tokens_saved__"] == expected_total
+
+    def test_known_call_site_has_compression(self):
+        compressor = CompressorNode()
+        result = compressor.savings_projection({"Conversation Title": 91816}, calls_per_week=1)
+        data = result["Conversation Title"]
+        assert data["compressed_tokens"] < data["avg_input_tokens"]
+        assert data["tokens_saved_per_call"] > 0
+
+    def test_empty_input_returns_zero_total(self):
+        compressor = CompressorNode()
+        result = compressor.savings_projection({})
+        assert result["__total_weekly_tokens_saved__"] == 0
