@@ -18,6 +18,7 @@ Usage:
     uvicorn proxy:app --reload --port 8000
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -39,10 +40,11 @@ from pydantic import BaseModel
 from compressor import CompressorNode
 from context_builder import classify_task, load_system_prompt, select_model
 from reasoning_layer import ReasoningLogger, ReasoningEvent
+import napper
 
 load_dotenv()
 
-# Load agent system prompt once at startup
+# System prompt loaded once; nap context is injected fresh per-request
 SYSTEM_PROMPT = load_system_prompt()
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -74,6 +76,17 @@ app.add_middleware(
 
 compressor = CompressorNode()
 logger = ReasoningLogger()
+
+
+@app.on_event("startup")
+async def _start_nap_watcher():
+    consolidator = None
+    try:
+        from consolidator import Consolidator
+        consolidator = Consolidator()
+    except Exception:
+        pass
+    asyncio.create_task(napper.inactivity_watcher(client, consolidator))
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +612,11 @@ async def complete(req: CompleteRequest):
     if route.model in _THINKING_MODELS:
         kwargs["thinking"] = {"type": "adaptive"}
 
+    # Inject fresh nap context into system message on each request
+    nap_ctx = napper.load_nap_context()
+    if nap_ctx:
+        system_msg = system_msg + nap_ctx
+
     if req.stream:
         return await _stream_response(kwargs, route.event_id, t0)
 
@@ -638,6 +656,17 @@ async def complete(req: CompleteRequest):
             {"role": "user",      "content": user_msg},
             {"role": "assistant", "content": content},
         ])
+
+    # Record activity and write micro nap snapshot in background
+    napper.touch_active()
+    nap_messages = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages
+        if isinstance(m.get("content"), str)
+    ]
+    nap_messages.append({"role": "assistant", "content": content})
+    if client:
+        asyncio.create_task(napper.write_micro_nap(nap_messages, client))
 
     return {
         "content": content,
