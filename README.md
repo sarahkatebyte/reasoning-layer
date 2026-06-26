@@ -251,6 +251,30 @@ pending = es.get_phosphorylated()
 
 ---
 
+### `consolidator.py` — NREM Pass
+
+Sleep-cycle-inspired consolidation. Episodic events get marked `phosphorylated=True` when the compressor truncates them; without intervention, those details fade.
+
+Two phases, one process:
+
+1. **NREM pass** — extract semantic facts and procedural patterns from phosphorylated events, write them to their stores, clear the flag.
+2. **Tier decay** — demote memories that haven't been activated within their type-specific threshold.
+
+```bash
+# Manual run
+python3 consolidator.py [--batch-size 50] [--dry-run]
+
+# Or on demand
+curl -X POST http://localhost:8000/consolidate
+
+# Cron (every hour)
+0 * * * * cd /path/to/reasoning-layer && .venv/bin/python3 consolidator.py
+```
+
+Uses `claude-haiku-4-5` for extraction — the right cost/quality tradeoff for memory ops.
+
+---
+
 ### Pending Event Store — Redis
 
 The `/route` → `/log` feedback loop stores events between calls. In a multi-agent environment (multiple WorkClaw agents, multiple uvicorn workers), an in-memory dict breaks — each process has its own copy.
@@ -264,6 +288,21 @@ Set `REDIS_URL` to enable. Falls back gracefully to in-memory if unset (fine for
 ```bash
 export REDIS_URL=redis://localhost:6379
 ```
+
+---
+
+### Filesystem + Shell Tools
+
+Every `/complete` call gets access to four tools the agent can invoke natively:
+
+| Tool | Purpose |
+|------|---------|
+| `read_file` | Read file contents at a path |
+| `write_file` | Write content (creates parent dirs if needed) |
+| `list_directory` | List entries at a path |
+| `bash` | Run a shell command, 30-second timeout |
+
+`bash` runs with `cwd=~`, so the agent has native access to your home directory without path-juggling. Designed for agents that need to do work, not only chat.
 
 ---
 

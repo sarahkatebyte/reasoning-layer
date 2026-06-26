@@ -7,43 +7,66 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --orange:      #C4521A;
+      --orange-hi:   #D45F20;
+      --orange-dim:  #7a3210;
+      --bg:          #0d0b09;
+      --bg-2:        #141210;
+      --bg-3:        #1c1916;
+      --border:      #2a2420;
+      --border-warm: #3a2e28;
+      --text:        #F0EDE8;
+      --text-dim:    #9a9088;
+      --text-muted:  #4a4038;
+    }
+
     body {
-      background: #0a0a0f;
-      color: #e8e8f0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
       height: 100dvh;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* The orange banner - Golden Meteors signature */
+    .top-stripe {
+      height: 3px;
+      background: var(--orange);
+      flex-shrink: 0;
+      -webkit-app-region: drag;
     }
 
     header {
-      padding: 16px 20px;
-      border-bottom: 1px solid #1e1e2e;
+      padding: 0 20px;
+      height: 52px;
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      gap: 10px;
       flex-shrink: 0;
+      -webkit-app-region: drag;
+      position: relative;
     }
 
-    .avatar {
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, #7c6af7, #a78bfa);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      font-weight: 600;
-      color: white;
+    /* Space for macOS traffic lights */
+    .tl-spacer {
+      width: 78px;
       flex-shrink: 0;
     }
 
     header h1 {
-      font-size: 16px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      color: #c4b5fd;
+      font-family: "Didot", "Bodoni MT", "Playfair Display", "Big Caslon", Georgia, serif;
+      font-size: 17px;
+      font-weight: 400;
+      font-style: italic;
+      letter-spacing: 0.12em;
+      color: var(--text);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
     }
 
     .header-right {
@@ -51,92 +74,104 @@
       display: flex;
       align-items: center;
       gap: 12px;
+      -webkit-app-region: no-drag;
     }
 
     .model-badge {
-      font-size: 11px;
-      color: #4a4a6a;
-      font-family: "SF Mono", monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: "SF Mono", "Menlo", monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
 
     #new-chat-btn {
       background: none;
-      border: 1px solid #1e1e2e;
-      border-radius: 6px;
-      color: #4a4a6a;
-      font-size: 11px;
-      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      color: var(--text-dim);
+      font-size: 10px;
+      padding: 5px 11px;
       cursor: pointer;
-      font-family: "SF Mono", monospace;
-      transition: all 0.15s;
+      font-family: -apple-system, sans-serif;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      transition: border-color 0.15s, color 0.15s;
     }
 
     #new-chat-btn:hover {
-      border-color: #4338ca;
-      color: #c4b5fd;
+      border-color: var(--orange);
+      color: var(--orange);
     }
 
     #messages {
       flex: 1;
       overflow-y: auto;
-      padding: 20px;
+      padding: 28px 32px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 18px;
       scroll-behavior: smooth;
     }
 
+    #messages::-webkit-scrollbar { width: 3px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border-warm); border-radius: 2px; }
+
     .message {
-      max-width: 85%;
-      line-height: 1.55;
-      font-size: 15px;
+      max-width: 78%;
+      line-height: 1.65;
+      font-size: 14.5px;
     }
 
     .message.user {
       align-self: flex-end;
-      background: #1e1b4b;
-      border: 1px solid #312e81;
-      color: #e0e7ff;
-      padding: 10px 14px;
-      border-radius: 18px 18px 4px 18px;
+      background: var(--bg-2);
+      border: 1px solid var(--border-warm);
+      border-left: 2px solid var(--orange);
+      color: var(--text);
+      padding: 10px 15px;
+      border-radius: 2px 10px 10px 2px;
     }
 
     .message.assistant {
       align-self: flex-start;
-      color: #e8e8f0;
     }
 
     .message.assistant .bubble {
-      background: #13131f;
-      border: 1px solid #1e1e2e;
-      padding: 10px 14px;
-      border-radius: 4px 18px 18px 18px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      padding: 12px 16px;
+      border-radius: 10px 10px 10px 2px;
+      color: var(--text);
     }
 
     .message.assistant .meta {
-      font-size: 11px;
-      color: #3a3a5a;
-      margin-top: 5px;
-      padding-left: 4px;
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      padding-left: 3px;
       font-family: "SF Mono", monospace;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
 
     .typing {
       display: flex;
-      gap: 4px;
-      padding: 12px 16px;
-      background: #13131f;
-      border: 1px solid #1e1e2e;
-      border-radius: 4px 18px 18px 18px;
+      gap: 5px;
+      padding: 13px 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 10px 10px 10px 2px;
       align-self: flex-start;
       width: fit-content;
     }
 
     .typing span {
-      width: 6px;
-      height: 6px;
+      width: 5px;
+      height: 5px;
       border-radius: 50%;
-      background: #6366f1;
+      background: var(--orange);
       animation: pulse 1.2s infinite;
     }
     .typing span:nth-child(2) { animation-delay: 0.2s; }
@@ -144,42 +179,43 @@
 
     @keyframes pulse {
       0%, 60%, 100% { opacity: 0.2; transform: scale(0.8); }
-      30% { opacity: 1; transform: scale(1); }
+      30%            { opacity: 1;   transform: scale(1); }
     }
 
     #input-area {
-      padding: 12px 16px;
-      border-top: 1px solid #1e1e2e;
+      padding: 14px 32px;
+      border-top: 1px solid var(--border);
       display: flex;
       gap: 10px;
       align-items: flex-end;
       flex-shrink: 0;
-      background: #0a0a0f;
+      background: var(--bg);
     }
 
     #input {
       flex: 1;
-      background: #13131f;
-      border: 1px solid #1e1e2e;
-      border-radius: 20px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 10px 16px;
-      color: #e8e8f0;
-      font-size: 15px;
+      color: var(--text);
+      font-size: 14.5px;
       resize: none;
       max-height: 120px;
-      line-height: 1.4;
+      line-height: 1.5;
       outline: none;
       font-family: inherit;
+      transition: border-color 0.15s;
     }
 
-    #input:focus { border-color: #4338ca; }
-    #input::placeholder { color: #3a3a5a; }
+    #input:focus { border-color: var(--orange-dim); }
+    #input::placeholder { color: var(--text-muted); }
 
     #send {
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      background: #4338ca;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--orange);
       border: none;
       cursor: pointer;
       display: flex;
@@ -189,66 +225,66 @@
       transition: background 0.15s;
     }
 
-    #send:hover { background: #6366f1; }
-    #send:disabled { background: #1e1e2e; cursor: not-allowed; }
-    #send svg { width: 16px; height: 16px; fill: white; }
+    #send:hover    { background: var(--orange-hi); }
+    #send:disabled { background: var(--bg-3); cursor: not-allowed; }
+    #send svg { width: 14px; height: 14px; fill: white; }
 
     code {
-      background: #1e1e2e;
+      background: var(--bg-3);
       padding: 1px 5px;
-      border-radius: 4px;
-      font-family: "SF Mono", monospace;
+      border-radius: 3px;
+      font-family: "SF Mono", "Menlo", monospace;
       font-size: 13px;
+      color: #c9a97a;
     }
 
     pre {
-      background: #13131f;
-      border: 1px solid #1e1e2e;
-      border-radius: 8px;
+      background: var(--bg-3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
       padding: 12px;
       overflow-x: auto;
-      margin: 6px 0;
+      margin: 8px 0;
     }
 
-    pre code { background: none; padding: 0; }
-    strong { color: #c4b5fd; }
+    pre code { background: none; padding: 0; color: var(--text-dim); }
+    strong { color: #d4a87a; }
+    em     { color: var(--text-dim); font-style: italic; }
   </style>
 </head>
 <body>
 
+<div class="top-stripe"></div>
+
 <header>
-  <div class="avatar">✦</div>
-  <h1>ASTRID</h1>
+  <div class="tl-spacer"></div>
+  <h1>Astrid</h1>
   <div class="header-right">
-    <span class="model-badge" id="model-badge">—</span>
-    <button id="new-chat-btn">new chat</button>
+    <span class="model-badge" id="model-badge"></span>
+    <button id="new-chat-btn">New Chat</button>
   </div>
 </header>
 
 <div id="messages"></div>
 
 <div id="input-area">
-  <textarea id="input" placeholder="Ask Astrid..." rows="1"></textarea>
+  <textarea id="input" placeholder="Message Astrid..." rows="1"></textarea>
   <button id="send">
     <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
   </button>
 </div>
 
 <script>
-  const API_BASE = `http://${location.hostname}:8000`;
+  const API_BASE   = `http://${location.hostname || 'localhost'}:8000`;
   const messagesEl = document.getElementById('messages');
   const inputEl    = document.getElementById('input');
   const sendBtn    = document.getElementById('send');
   const modelBadge = document.getElementById('model-badge');
   const newChatBtn = document.getElementById('new-chat-btn');
 
-  // Session ID persists across page refreshes
   function getSessionId() {
     let id = localStorage.getItem('session_id');
-    if (!id) {
-      id = crypto.randomUUID();
-      localStorage.setItem('session_id', id);
-    }
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem('session_id', id); }
     return id;
   }
 
@@ -260,8 +296,16 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   }
 
-  function scrollBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+  function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+  function renderMarkdown(text) {
+    return text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>');
   }
 
   function addMessage(role, content, meta) {
@@ -293,40 +337,22 @@
     return div;
   }
 
-  function renderMarkdown(text) {
-    return text
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-      .replace(/\n/g, '<br>');
-  }
-
-  // Load existing conversation on page load
   async function loadHistory() {
     try {
       const res  = await fetch(`${API_BASE}/session/${sessionId}`);
       const data = await res.json();
       history = data.messages || [];
-      for (const msg of history) {
-        addMessage(msg.role, msg.content, null);
-      }
-    } catch (e) {
-      // proxy not running yet — start fresh
-    }
+      for (const msg of history) addMessage(msg.role, msg.content, null);
+    } catch (e) { /* proxy not ready yet */ }
   }
 
-  // Start a new conversation
   async function newChat() {
-    try {
-      await fetch(`${API_BASE}/session/${sessionId}`, { method: 'DELETE' });
-    } catch (e) {}
+    try { await fetch(`${API_BASE}/session/${sessionId}`, { method: 'DELETE' }); } catch (e) {}
     sessionId = crypto.randomUUID();
     localStorage.setItem('session_id', sessionId);
     history = [];
     messagesEl.innerHTML = '';
-    modelBadge.textContent = '—';
+    modelBadge.textContent = '';
     inputEl.focus();
   }
 
@@ -344,21 +370,18 @@
     const typing = addTyping();
 
     try {
-      const res = await fetch(`${API_BASE}/complete`, {
+      const res  = await fetch(`${API_BASE}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, session_id: sessionId })
+        body: JSON.stringify({ messages: history, session_id: sessionId }),
       });
-
       const data = await res.json();
       typing.remove();
-
       addMessage('assistant', data.content, { model: data.model, task_type: data.task_type });
       history.push({ role: 'assistant', content: data.content });
-
     } catch (e) {
       typing.remove();
-      addMessage('assistant', 'Connection error. Is the proxy running?', null);
+      addMessage('assistant', 'Connection error - is the proxy running?', null);
     }
 
     sendBtn.disabled = false;

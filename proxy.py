@@ -489,6 +489,87 @@ async def _stream_response(kwargs: dict, event_id: str, t0: float) -> StreamingR
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+# ---------------------------------------------------------------------------
+# Filesystem + shell tools — available in every /complete call
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess
+
+FILESYSTEM_TOOLS = [
+    {
+        "name": "read_file",
+        "description": "Read the full contents of a file at the given path.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file, creating it (and any parent dirs) if needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":    {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "list_directory",
+        "description": "List files and subdirectories at the given path.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "bash",
+        "description": "Execute a bash command and return stdout + stderr. 30-second timeout.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+]
+
+
+def _execute_tool(name: str, inputs: dict) -> str:
+    try:
+        if name == "read_file":
+            path = os.path.expanduser(inputs["path"])
+            with open(path) as f:
+                return f.read()
+        elif name == "write_file":
+            path = os.path.expanduser(inputs["path"])
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(inputs["content"])
+            return f"ok: wrote {len(inputs['content'])} chars to {path}"
+        elif name == "list_directory":
+            path = os.path.expanduser(inputs["path"])
+            return "\n".join(sorted(os.listdir(path)))
+        elif name == "bash":
+            result = _subprocess.run(
+                inputs["command"],
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=os.path.expanduser("~"),
+            )
+            out = (result.stdout + result.stderr).strip()
+            return out[:8000] if out else "(no output)"
+        else:
+            return f"unknown tool: {name}"
+    except Exception as e:
+        return f"error: {e}"
+
+
 @app.post("/complete")
 async def complete(req: CompleteRequest):
     """
@@ -521,7 +602,27 @@ async def complete(req: CompleteRequest):
     if req.stream:
         return await _stream_response(kwargs, route.event_id, t0)
 
-    response = await client.messages.create(**kwargs)
+    # Agentic tool loop — runs until model stops calling tools
+    kwargs["tools"] = FILESYSTEM_TOOLS
+    tool_messages = list(messages)
+    response = None
+    while True:
+        kwargs["messages"] = tool_messages
+        response = await client.messages.create(**kwargs)
+        tool_blocks = [b for b in response.content if b.type == "tool_use"]
+        if not tool_blocks:
+            break
+        tool_results = [
+            {
+                "type": "tool_result",
+                "tool_use_id": b.id,
+                "content": _execute_tool(b.name, b.input),
+            }
+            for b in tool_blocks
+        ]
+        tool_messages.append({"role": "assistant", "content": response.content})
+        tool_messages.append({"role": "user",      "content": tool_results})
+
     content = next((b.text for b in response.content if b.type == "text"), "")
     output_tokens = response.usage.output_tokens if response.usage else None
 
