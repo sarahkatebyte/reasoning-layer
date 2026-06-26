@@ -147,6 +147,47 @@ class _PendingStore:
 _pending = _PendingStore(redis_url=os.environ.get("REDIS_URL"))
 
 
+# ---------------------------------------------------------------------------
+# Conversation store — persists chat history across page refreshes
+# ---------------------------------------------------------------------------
+
+_SESSION_TTL_SECS = 30 * 24 * 3600   # 30 days
+_SESSION_MAX_MSGS  = 200               # trim oldest messages beyond this
+
+class _ConversationStore:
+    """Redis-backed conversation history. Falls back to in-memory."""
+
+    def __init__(self, redis_client=None):
+        self._redis = redis_client
+        self._mem: dict[str, list] = {}
+
+    def get(self, session_id: str) -> list:
+        if self._redis:
+            raw = self._redis.get(f"session:{session_id}")
+            return json.loads(raw) if raw else []
+        return list(self._mem.get(session_id, []))
+
+    def append(self, session_id: str, new_messages: list):
+        history = self.get(session_id)
+        history.extend(new_messages)
+        history = history[-_SESSION_MAX_MSGS:]
+        if self._redis:
+            self._redis.setex(f"session:{session_id}", _SESSION_TTL_SECS, json.dumps(history))
+        else:
+            self._mem[session_id] = history
+
+    def clear(self, session_id: str):
+        if self._redis:
+            self._redis.delete(f"session:{session_id}")
+        else:
+            self._mem.pop(session_id, None)
+
+
+_conversations = _ConversationStore(
+    redis_client=_pending._redis   # reuse the same Redis connection
+)
+
+
 def score_response_quality(response_text: str, output_tokens: Optional[int] = None) -> float:
     """
     Heuristic quality score (0.0–1.0) based on observable response signals.
@@ -404,6 +445,7 @@ class CompleteRequest(BaseModel):
     messages: List[Message]
     call_site: str = "default"
     stream: bool = False
+    session_id: Optional[str] = None
 
 def _prepare_messages(req: CompleteRequest, compressed_prompt: str) -> tuple[list, str]:
     """Split system message, inject compressed prompt, return (messages, system_prompt)."""
@@ -490,12 +532,31 @@ async def complete(req: CompleteRequest):
         output_tokens=output_tokens,
     ))
 
+    if req.session_id:
+        _conversations.append(req.session_id, [
+            {"role": "user",      "content": user_msg},
+            {"role": "assistant", "content": content},
+        ])
+
     return {
         "content": content,
         "model": route.model,
         "tokens_saved": route.tokens_saved,
         "task_type": route.task_type,
     }
+
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: str):
+    """Load conversation history for a session."""
+    return {"session_id": session_id, "messages": _conversations.get(session_id)}
+
+
+@app.delete("/session/{session_id}")
+async def clear_session(session_id: str):
+    """Clear a session's conversation history."""
+    _conversations.clear(session_id)
+    return {"ok": True, "session_id": session_id}
 
 
 @app.post("/consolidate")

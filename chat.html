@@ -46,11 +46,34 @@
       color: #c4b5fd;
     }
 
-    .model-badge {
+    .header-right {
       margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .model-badge {
       font-size: 11px;
       color: #4a4a6a;
       font-family: "SF Mono", monospace;
+    }
+
+    #new-chat-btn {
+      background: none;
+      border: 1px solid #1e1e2e;
+      border-radius: 6px;
+      color: #4a4a6a;
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-family: "SF Mono", monospace;
+      transition: all 0.15s;
+    }
+
+    #new-chat-btn:hover {
+      border-color: #4338ca;
+      color: #c4b5fd;
     }
 
     #messages {
@@ -149,10 +172,7 @@
       font-family: inherit;
     }
 
-    #input:focus {
-      border-color: #4338ca;
-    }
-
+    #input:focus { border-color: #4338ca; }
     #input::placeholder { color: #3a3a5a; }
 
     #send {
@@ -171,7 +191,6 @@
 
     #send:hover { background: #6366f1; }
     #send:disabled { background: #1e1e2e; cursor: not-allowed; }
-
     #send svg { width: 16px; height: 16px; fill: white; }
 
     code {
@@ -192,7 +211,6 @@
     }
 
     pre code { background: none; padding: 0; }
-
     strong { color: #c4b5fd; }
   </style>
 </head>
@@ -201,7 +219,10 @@
 <header>
   <div class="avatar">✦</div>
   <h1>ASTRID</h1>
-  <span class="model-badge" id="model-badge">—</span>
+  <div class="header-right">
+    <span class="model-badge" id="model-badge">—</span>
+    <button id="new-chat-btn">new chat</button>
+  </div>
 </header>
 
 <div id="messages"></div>
@@ -214,13 +235,25 @@
 </div>
 
 <script>
-  const API = `http://${location.hostname}:8000/complete`;
+  const API_BASE = `http://${location.hostname}:8000`;
   const messagesEl = document.getElementById('messages');
-  const inputEl = document.getElementById('input');
-  const sendBtn = document.getElementById('send');
+  const inputEl    = document.getElementById('input');
+  const sendBtn    = document.getElementById('send');
   const modelBadge = document.getElementById('model-badge');
+  const newChatBtn = document.getElementById('new-chat-btn');
 
-  const history = [];
+  // Session ID persists across page refreshes
+  function getSessionId() {
+    let id = localStorage.getItem('session_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('session_id', id);
+    }
+    return id;
+  }
+
+  let sessionId = getSessionId();
+  let history   = [];
 
   function autoResize() {
     inputEl.style.height = 'auto';
@@ -270,6 +303,33 @@
       .replace(/\n/g, '<br>');
   }
 
+  // Load existing conversation on page load
+  async function loadHistory() {
+    try {
+      const res  = await fetch(`${API_BASE}/session/${sessionId}`);
+      const data = await res.json();
+      history = data.messages || [];
+      for (const msg of history) {
+        addMessage(msg.role, msg.content, null);
+      }
+    } catch (e) {
+      // proxy not running yet — start fresh
+    }
+  }
+
+  // Start a new conversation
+  async function newChat() {
+    try {
+      await fetch(`${API_BASE}/session/${sessionId}`, { method: 'DELETE' });
+    } catch (e) {}
+    sessionId = crypto.randomUUID();
+    localStorage.setItem('session_id', sessionId);
+    history = [];
+    messagesEl.innerHTML = '';
+    modelBadge.textContent = '—';
+    inputEl.focus();
+  }
+
   async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
@@ -284,10 +344,10 @@
     const typing = addTyping();
 
     try {
-      const res = await fetch(API, {
+      const res = await fetch(`${API_BASE}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history })
+        body: JSON.stringify({ messages: history, session_id: sessionId })
       });
 
       const data = await res.json();
@@ -310,6 +370,9 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
   sendBtn.addEventListener('click', send);
+  newChatBtn.addEventListener('click', newChat);
+
+  loadHistory();
 </script>
 </body>
 </html>
