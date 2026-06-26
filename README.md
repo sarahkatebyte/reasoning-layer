@@ -253,7 +253,7 @@ pending = es.get_phosphorylated()
 
 ### `consolidator.py` — NREM Pass
 
-Sleep-cycle-inspired consolidation. Episodic events get marked `phosphorylated=True` when the compressor truncates them; without intervention, those details fade.
+Sleep-cycle-inspired consolidation. Episodic events get the `phosphorylated=True` marker when the compressor truncates them (biology metaphor for 'recently activated'). Without intervention, those details fade.
 
 Two phases, one process:
 
@@ -302,7 +302,7 @@ Every `/complete` call gets access to four tools the agent can invoke natively:
 | `list_directory` | List entries at a path |
 | `bash` | Run a shell command, 30-second timeout |
 
-`bash` runs with `cwd=~`, so the agent has native access to your home directory without path-juggling. Designed for agents that need to do work, not only chat.
+`bash` runs with `cwd=~`, so the agent has native access to your home directory without path-juggling. Inherits your shell environment (aliases, exported vars) — useful, but worth knowing the boundary. Designed for agents that need to do work, not only chat.
 
 ---
 
